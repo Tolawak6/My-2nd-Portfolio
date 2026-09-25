@@ -10,6 +10,7 @@
 const LIMITS = {
   name: 150,
   image: 2048,
+  imagePublicId: 300,
   link: 2048,
   description: 2000,
 };
@@ -113,6 +114,30 @@ export function validateProjectPayload(body, { partial = false } = {}) {
     } else {
       value.link = link;
     }
+  }
+
+  // ---- imagePublicId (optional) ----------------------------------------
+  // Identifies an image uploaded through the admin dashboard so it can be
+  // cleaned up later. Never typed by hand: the upload endpoint returns it
+  // alongside the URL. Externally hosted images leave this empty, which is
+  // exactly what stops us from deleting an asset we did not create.
+  if (body.imagePublicId !== undefined && body.imagePublicId !== null) {
+    const publicId = String(body.imagePublicId).trim();
+    if (publicId.length > LIMITS.imagePublicId) {
+      errors.push({
+        field: 'imagePublicId',
+        message: `Image identifier must be ${LIMITS.imagePublicId} characters or fewer.`,
+      });
+    } else if (publicId && !/^[A-Za-z0-9][A-Za-z0-9._\-/]*$/.test(publicId)) {
+      errors.push({
+        field: 'imagePublicId',
+        message: 'Image identifier contains unsupported characters.',
+      });
+    } else {
+      value.imagePublicId = publicId;
+    }
+  } else if (!partial) {
+    value.imagePublicId = '';
   }
 
   return { value, errors };

@@ -4,7 +4,9 @@ import { config } from '../config/index.js';
 import { asyncHandler, AppError } from '../utils/http.js';
 import { createSessionToken, safeCompare } from '../utils/session.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
+import { uploadSingleImage } from '../middleware/upload.js';
 import { findAllMessages } from '../services/contact.service.js';
+import { uploadImage } from '../controllers/upload.controller.js';
 
 export const adminRouter = Router();
 
@@ -28,12 +30,33 @@ const loginLimiter = rateLimit({
   },
 });
 
+/**
+ * Upload throttling. Generous enough to add several projects in a row, tight
+ * enough that a signed-in session cannot be used to hammer the storage account.
+ */
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.isProduction ? 40 : 200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    error: {
+      message: 'Too many image uploads. Please wait a few minutes and try again.',
+      status: 429,
+    },
+  },
+});
+
 /** Reports whether admin auth is available so /admin can explain itself. */
 adminRouter.get('/status', (req, res) => {
   res.json({
     data: {
       authConfigured: config.admin.configured,
       sessionTtlMinutes: config.admin.sessionTtlMinutes,
+      // Lets the dashboard show the file picker or the URL fallback.
+      uploadsConfigured: config.storage.enabled,
+      maxUploadMb: Math.round(config.storage.maxUploadBytes / (1024 * 1024)),
+      storageProvider: config.storage.provider,
     },
   });
 });
@@ -70,6 +93,22 @@ adminRouter.post(
       },
     });
   }),
+);
+
+/**
+ * POST /api/admin/uploads
+ * Multipart image upload: `file` field, bearer token required.
+ *
+ * requireAdmin runs first so an unauthenticated request is rejected before its
+ * body is buffered - only a signed-in admin can make the server hold bytes in
+ * memory.
+ */
+adminRouter.post(
+  '/uploads',
+  requireAdmin,
+  uploadLimiter,
+  uploadSingleImage,
+  asyncHandler(uploadImage),
 );
 
 /**

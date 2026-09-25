@@ -47,6 +47,29 @@ const adminSessionSecret = optional('ADMIN_SESSION_SECRET');
 const adminConfigured =
   adminApiKey.length >= 16 && adminSessionSecret.length >= 16;
 
+/**
+ * Image storage is Cloudinary. All three values are optional so a fresh clone
+ * still boots: without them the upload endpoint returns 503 and the admin form
+ * falls back to pasting an image URL.
+ */
+const cloudinaryCloudName = optional('CLOUDINARY_CLOUD_NAME');
+const cloudinaryApiKey = optional('CLOUDINARY_API_KEY');
+const cloudinaryApiSecret = optional('CLOUDINARY_API_SECRET');
+
+const storageConfigured = Boolean(
+  cloudinaryCloudName && cloudinaryApiKey && cloudinaryApiSecret,
+);
+
+if (!storageConfigured) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '\n[config] Image uploads are NOT configured.\n' +
+      '         The admin dashboard will offer a URL field instead of a file picker.\n' +
+      '         Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET\n' +
+      '         in server/.env to enable uploads.\n',
+  );
+}
+
 if (!adminConfigured) {
   // eslint-disable-next-line no-console
   console.warn(
@@ -78,6 +101,20 @@ export const config = {
     apiKey: adminApiKey,
     sessionSecret: adminSessionSecret,
     sessionTtlMinutes: Number(optional('ADMIN_SESSION_TTL_MINUTES', '120')),
+  },
+
+  storage: {
+    enabled: storageConfigured,
+    provider: 'cloudinary',
+    cloudName: cloudinaryCloudName,
+    apiKey: cloudinaryApiKey,
+    apiSecret: cloudinaryApiSecret,
+    // Everything lands in one folder, which makes the account easy to tidy up.
+    folder: optional('CLOUDINARY_FOLDER', 'portfolio/projects'),
+    // Overridable so the test suite can point at a local stand-in.
+    apiBase: optional('CLOUDINARY_API_BASE', 'https://api.cloudinary.com').replace(/\/+$/, ''),
+    // Applied by multer before a single byte is forwarded upstream.
+    maxUploadBytes: Number(optional('MAX_UPLOAD_MB', '5')) * 1024 * 1024,
   },
 
   // In development every loopback origin is allowed so the site works no matter

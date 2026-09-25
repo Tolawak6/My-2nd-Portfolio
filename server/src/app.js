@@ -73,6 +73,7 @@ export function createApp() {
           'GET    /api/admin/status',
           'POST   /api/admin/session',
           'GET    /api/admin/messages      (admin)',
+          'POST   /api/admin/uploads       (admin, multipart)',
           'POST   /api/contact',
         ],
       },

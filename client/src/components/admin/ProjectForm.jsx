@@ -2,9 +2,10 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '../ui/Button.jsx';
 import { Alert } from '../ui/Alert.jsx';
 import { Icon } from '../ui/Icon.jsx';
+import { ImagePicker } from './ImagePicker.jsx';
 import { ApiError } from '../../services/api.js';
 
-const EMPTY = { name: '', image: '', link: '', description: '' };
+const EMPTY = { name: '', image: '', imagePublicId: '', link: '', description: '' };
 
 /** Mirrors the API validation rules so mistakes are caught before a round trip. */
 function validate(values) {
@@ -18,8 +19,10 @@ function validate(values) {
   if (!description) errors.description = 'Description is required.';
   else if (description.length > 2000) errors.description = 'Keep the description under 2000 characters.';
 
+  // Only pasted URLs can be malformed. Anything that came back from an upload
+  // is a URL the storage provider generated, so there is nothing to check.
   const image = values.image.trim();
-  if (image && !isUrlLike(image)) {
+  if (image && !values.imagePublicId && !isUrlLike(image)) {
     errors.image = 'Use a full URL (https://…) or a path starting with "/".';
   }
 
@@ -46,13 +49,27 @@ function isUrlLike(value) {
  *
  * The same component handles both modes so the fields, validation and layout
  * can never drift apart. `project` is null when adding.
+ *
+ * The image field is delegated to ImagePicker, which owns the upload lifecycle
+ * and reports back a URL plus the storage id needed to clean the asset up later.
  */
-export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, submitError = null }) {
+export function ProjectForm({
+  project = null,
+  onSubmit,
+  onCancel,
+  busy = false,
+  submitError = null,
+  token,
+  uploadsConfigured = true,
+  maxUploadMb = 5,
+}) {
   const uid = useId();
   const isEditing = Boolean(project);
   const [values, setValues] = useState(EMPTY);
   const [errors, setErrors] = useState({});
-  const [previewFailed, setPreviewFailed] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  // Bumped after a successful add so the picker remounts with a clean slate.
+  const [formKey, setFormKey] = useState(0);
   const nameRef = useRef(null);
 
   // Load the project being edited, or reset to blank when switching to "add".
@@ -62,13 +79,14 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
         ? {
             name: project.name ?? '',
             image: project.image ?? '',
+            imagePublicId: project.imagePublicId ?? '',
             link: project.link ?? '',
             description: project.description ?? '',
           }
         : EMPTY,
     );
     setErrors({});
-    setPreviewFailed(false);
+    setFormKey((key) => key + 1);
   }, [project]);
 
   // Server-side 422 detail maps back onto the fields.
@@ -84,12 +102,21 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
   const update = (field) => (event) => {
     const { value } = event.target;
     setValues((prev) => ({ ...prev, [field]: value }));
-    if (field === 'image') setPreviewFailed(false);
     setErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
+  };
+
+  /** ImagePicker reports both halves of an image together. */
+  const handleImageChange = ({ url, publicId }) => {
+    setValues((prev) => ({ ...prev, image: url, imagePublicId: publicId }));
+    setErrors((prev) => (prev.image ? { ...prev, image: undefined } : prev));
   };
 
   async function handleSubmit(event) {
     event.preventDefault();
+
+    // Saving mid-upload would store a project with no image and lose the file
+    // the admin just chose. Better to make them wait the second it takes.
+    if (uploadBusy) return;
 
     const nextErrors = validate(values);
     if (Object.keys(nextErrors).length > 0) {
@@ -102,6 +129,7 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
     const payload = {
       name: values.name.trim(),
       image: values.image.trim(),
+      imagePublicId: values.imagePublicId,
       link: values.link.trim(),
       description: values.description.trim(),
     };
@@ -112,11 +140,12 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
       // entered in a row without manually emptying every field.
       setValues(EMPTY);
       setErrors({});
+      setFormKey((key) => key + 1);
       nameRef.current?.focus();
     }
   }
 
-  const previewUrl = values.image.trim();
+  const formDisabled = busy || uploadBusy;
 
   return (
     <form className="project-form" onSubmit={handleSubmit} noValidate>
@@ -144,7 +173,7 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
             onChange={update('name')}
             maxLength={150}
             required
-            disabled={busy}
+            disabled={formDisabled}
             aria-invalid={errors.name ? 'true' : undefined}
             aria-describedby={errors.name ? errorId('name') : undefined}
           />
@@ -168,7 +197,7 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
             onChange={update('link')}
             placeholder="https://github.com/you/project"
             inputMode="url"
-            disabled={busy}
+            disabled={formDisabled}
             aria-invalid={errors.link ? 'true' : undefined}
             aria-describedby={errors.link ? errorId('link') : undefined}
           />
@@ -181,52 +210,21 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
         </div>
       </div>
 
-      <div className="field">
-        <label className="field__label" htmlFor={fieldId('image')}>
-          Image URL
-          <span className="field__optional">Optional</span>
-        </label>
-        <input
-          id={fieldId('image')}
-          className={`input ${errors.image ? 'input--invalid' : ''}`.trim()}
-          value={values.image}
-          onChange={update('image')}
-          placeholder="https://… or /images/projects/my-project.png"
-          inputMode="url"
-          disabled={busy}
-          aria-invalid={errors.image ? 'true' : undefined}
-          aria-describedby={errors.image ? errorId('image') : `${fieldId('image')}-hint`}
-        />
-        {errors.image ? (
-          <p className="field__error" id={errorId('image')}>
-            <Icon name="alert" size={13} />
-            {errors.image}
-          </p>
-        ) : (
-          <p className="field__hint" id={`${fieldId('image')}-hint`}>
-            Leave empty and the card shows a clean placeholder instead of a broken image.
-          </p>
-        )}
-
-        {previewUrl && !errors.image && (
-          <div className="project-form__preview">
-            <span className="project-form__preview-label">Preview</span>
-            {previewFailed ? (
-              <p className="project-form__preview-failed">
-                <Icon name="alert" size={13} />
-                That image could not be loaded. Check the URL.
-              </p>
-            ) : (
-              <img
-                src={previewUrl}
-                alt=""
-                className="project-form__preview-img"
-                onError={() => setPreviewFailed(true)}
-              />
-            )}
-          </div>
-        )}
-      </div>
+      <ImagePicker
+        key={formKey}
+        inputId={fieldId('image')}
+        value={values.image}
+        publicId={values.imagePublicId}
+        onChange={handleImageChange}
+        onBusyChange={setUploadBusy}
+        token={token}
+        uploadsConfigured={uploadsConfigured}
+        maxUploadMb={maxUploadMb}
+        disabled={busy}
+        error={errors.image}
+        errorId={errorId('image')}
+        hintId={`${fieldId('image')}-hint`}
+      />
 
       <div className="field">
         <label className="field__label" htmlFor={fieldId('description')}>
@@ -240,7 +238,7 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
           rows={4}
           maxLength={2000}
           required
-          disabled={busy}
+          disabled={formDisabled}
           aria-invalid={errors.description ? 'true' : undefined}
           aria-describedby={errors.description ? errorId('description') : undefined}
         />
@@ -263,12 +261,14 @@ export function ProjectForm({ project = null, onSubmit, onCancel, busy = false, 
           variant="primary"
           type="submit"
           loading={busy}
+          disabled={uploadBusy}
           icon={<Icon name={isEditing ? 'check' : 'plus'} size={16} />}
         >
           {busy ? 'Saving…' : isEditing ? 'Save changes' : 'Add project'}
         </Button>
+        {uploadBusy && <span className="form-actions__note">Waiting for the image…</span>}
         {isEditing && (
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+          <Button variant="ghost" onClick={onCancel} disabled={formDisabled}>
             Cancel
           </Button>
         )}

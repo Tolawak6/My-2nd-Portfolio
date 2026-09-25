@@ -19,6 +19,11 @@ export class AppError extends Error {
     return new AppError(message, 404);
   }
 
+  /** 415 - used when an upload is not an image, or is bigger than the limit. */
+  static unsupportedMediaType(message = 'That file type is not supported.') {
+    return new AppError(message, 415);
+  }
+
   static serviceUnavailable(message) {
     return new AppError(message, 503);
   }

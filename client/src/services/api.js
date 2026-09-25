@@ -48,7 +48,7 @@ export class ApiError extends Error {
 }
 
 /** Copy the API's message into a user-facing sentence. */
-function messageForStatus(status, serverMessage) {
+export function messageForStatus(status, serverMessage) {
   if (serverMessage) return serverMessage;
 
   switch (status) {

@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useProjects } from '../hooks/useProjects.js';
 import { createProject, updateProject, deleteProject } from '../services/projects.js';
-import { fetchMessages, readStoredSession, clearSession } from '../services/adminApi.js';
+import {
+  fetchMessages,
+  fetchAdminStatus,
+  readStoredSession,
+  clearSession,
+} from '../services/adminApi.js';
 import { ApiError } from '../services/api.js';
 import { profile } from '../content/portfolio.js';
 
@@ -66,6 +71,27 @@ function AdminDashboard({ session, tab, onTabChange, onSignOut, onSessionExpired
   const [messages, setMessages] = useState([]);
   const [messagesStatus, setMessagesStatus] = useState('idle');
   const [messagesError, setMessagesError] = useState(null);
+
+  /*
+   * Whether the server has image storage configured. Assumed true until told
+   * otherwise so the file picker is not withheld from an admin on a working
+   * deployment; if the answer is false the form falls back to the URL field.
+   */
+  const [adminStatus, setAdminStatus] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    fetchAdminStatus()
+      .then((status) => {
+        if (active) setAdminStatus(status);
+      })
+      .catch(() => {
+        /* Non-fatal: the form simply keeps its optimistic defaults. */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   /**
    * Any 401 means the token expired or the server restarted with a new secret.
@@ -257,6 +283,9 @@ function AdminDashboard({ session, tab, onTabChange, onSignOut, onSessionExpired
                 }}
                 busy={saving}
                 submitError={saveError}
+                token={token}
+                uploadsConfigured={adminStatus?.uploadsConfigured !== false}
+                maxUploadMb={adminStatus?.maxUploadMb ?? 5}
               />
             </section>
 

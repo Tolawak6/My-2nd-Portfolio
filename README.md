@@ -27,8 +27,9 @@ through a `/admin` dashboard, and reach the page through the API.
 15. [Deployment considerations](#15-deployment-considerations)
 16. [Editing your personal content](#16-editing-your-personal-content)
 17. [Adding your photo](#17-adding-your-photo)
-18. [API reference](#18-api-reference)
-19. [Troubleshooting](#19-troubleshooting)
+18. [Image uploads](#18-image-uploads)
+19. [API reference](#19-api-reference)
+20. [Troubleshooting](#20-troubleshooting)
 
 ---
 
@@ -115,7 +116,7 @@ programmatically — see [Verified behaviour](#verified-behaviour).
 │   │       └── projects/               # sample project images
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── admin/              # AdminLogin, ProjectForm, ProjectTable, MessagesPanel
+│   │   │   ├── admin/              # AdminLogin, ProjectForm, ImagePicker, ProjectTable, MessagesPanel
 │   │   │   ├── contact/            # ContactForm
 │   │   │   ├── layout/             # Header, Footer, ScrollManager
 │   │   │   ├── projects/           # ProjectCard (+ skeleton)
@@ -125,9 +126,9 @@ programmatically — see [Verified behaviour](#verified-behaviour).
 │   │   ├── hooks/                  # useProjects, useRevealOnScroll, useScrollSpy, useLockBodyScroll
 │   │   ├── pages/                  # PortfolioPage, AdminPage, NotFoundPage
 │   │   ├── sections/               # Hero, About, Skills, Projects, Experience, Education, Contact
-│   │   ├── services/               # api.js, projects.js, adminApi.js, contact.js
+│   │   ├── services/               # api.js, projects.js, adminApi.js, contact.js, uploads.js
 │   │   ├── styles/                 # tokens.css, base.css, forms.css
-│   │   ├── utils/                  # format.js
+│   │   ├── utils/                  # format.js, optimizeImage.js (browser-side resize)
 │   │   ├── App.jsx
 │   │   └── main.jsx
 │   ├── index.html                  # SEO tags live here
@@ -141,11 +142,11 @@ programmatically — see [Verified behaviour](#verified-behaviour).
 │   │   └── generate-admin-key.js
 │   ├── src/
 │   │   ├── config/index.js         # env parsing, fails fast on bad config
-│   │   ├── controllers/            # project.controller.js
+│   │   ├── controllers/            # project.controller.js, upload.controller.js
 │   │   ├── db/                     # pool.js, schema.sql, migrate.js, seed.js
-│   │   ├── middleware/             # requireAdmin, errorHandler, notFound, requestLogger, requireNumericId
+│   │   ├── middleware/             # requireAdmin, upload (multer), errorHandler, notFound, requestLogger, requireNumericId
 │   │   ├── routes/                 # projects, admin, contact, health + index.js
-│   │   ├── services/               # project.service.js, contact.service.js
+│   │   ├── services/               # project.service.js, contact.service.js, storage.service.js (Cloudinary)
 │   │   ├── utils/                  # http.js, session.js
 │   │   ├── validators/             # project.validator.js
 │   │   ├── app.js                  # builds the Express app
@@ -212,9 +213,17 @@ SSL.
 | `ADMIN_API_KEY` | for admin | Server-side admin key. Generate with `npm run admin:key`. |
 | `ADMIN_SESSION_SECRET` | for admin | Signs session tokens. Generate with `npm run admin:key`. |
 | `ADMIN_SESSION_TTL_MINUTES` | no | Session lifetime. Default `120`. |
+| `CLOUDINARY_CLOUD_NAME` | for uploads | From the Cloudinary console. |
+| `CLOUDINARY_API_KEY` | for uploads | From the Cloudinary console. |
+| `CLOUDINARY_API_SECRET` | for uploads | **Secret.** Signs each upload. Never reaches the browser. |
+| `CLOUDINARY_FOLDER` | no | Where uploads are filed. Default `portfolio/projects`. |
+| `MAX_UPLOAD_MB` | no | Server-side size backstop. Default `5`. |
 
 > **If `ADMIN_API_KEY` and `ADMIN_SESSION_SECRET` are missing, the admin write endpoints return
 > `503` and stay closed.** They never fall open.
+>
+> **If the three `CLOUDINARY_*` values are missing, the upload endpoint returns `503` and the
+> admin form falls back to a plain image-URL field.** A fresh clone always runs.
 
 ### `client/.env`
 
@@ -238,8 +247,14 @@ npm run db:reset          # reset + seed in one step
 
 `db:migrate` applies `src/db/schema.sql`, which creates:
 
-- **`projects`** — `id` (identity PK), `name`, `image`, `link`, `description`, `created_at`, `updated_at`.
-  `updated_at` is kept accurate by a `BEFORE UPDATE` trigger.
+- **`projects`** — `id` (identity PK), `name`, `image`, `link`, `description`,
+  `image_public_id`, `created_at`, `updated_at`. `updated_at` is kept accurate by a `BEFORE UPDATE`
+  trigger. `image_public_id` records the storage asset behind an uploaded image so it can be cleaned
+  up later; it is empty for images referenced by URL, which are never deleted.
+
+Every statement is idempotent, so `db:migrate` is safe to run against a database that already holds
+data — new columns are added with `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` rather than requiring a
+reset.
 - **`contact_messages`** — contact form submissions.
 
 ## 9. Running the backend
@@ -301,8 +316,11 @@ Other root shortcuts: `npm run dev:api`, `npm run dev:web`, `npm run build`,
 
 2. Open **http://localhost:5173/admin**.
 3. Enter your `ADMIN_API_KEY` and sign in.
-4. Fill in **Project name**, **Image URL**, **Project URL**, **Description** and press
-   **Add project**.
+4. Fill in **Project name** and **Project URL**.
+5. Under **Project image**, press **Choose Image** and pick a file — from your computer or your
+   phone. It uploads straight away and shows a preview. (Prefer to link an image you already host?
+   Switch to **Use a URL** and paste the address instead.)
+6. Add a **Description** and press **Add project**.
 
 The project is written to PostgreSQL and appears in the portfolio's Projects section immediately —
 no rebuild, no code change.
@@ -393,8 +411,10 @@ The frontend and backend deploy independently.
 - Root directory: `server`
 - Build command: `npm install`
 - Start command: `npm start`
-- Environment: `NODE_ENV=production`, `PORT`, `DATABASE_URL`, `DB_SSL=true`, `CLIENT_URL`, plus the
-  two admin secrets.
+- Environment: `NODE_ENV=production`, `PORT`, `DATABASE_URL`, `DB_SSL=true`, `CLIENT_URL`, the two
+  admin secrets, and the three `CLOUDINARY_*` values.
+- Uploads never touch the server's filesystem — images are buffered in memory and forwarded
+  straight to Cloudinary — so the API stays stateless and can run on a host with an ephemeral disk.
 
 **Database → Neon / Supabase / Render PostgreSQL / RDS**
 - Create the instance, run `npm run db:migrate` against it once, and optionally `npm run db:seed`.
@@ -412,6 +432,7 @@ CLIENT_URL=https://portfolio.example.com,https://www.portfolio.example.com
 - [ ] Fresh `ADMIN_API_KEY` and `ADMIN_SESSION_SECRET` generated for production.
 - [ ] `DATABASE_URL` and both admin secrets set as host environment variables, never committed.
 - [ ] `CLIENT_URL` lists only your real frontend origins.
+- [ ] `CLOUDINARY_API_SECRET` is set on the server only — it must never appear in `client/`.
 - [ ] `.env` files are git-ignored (they already are — see `.gitignore`).
 
 ---
@@ -509,7 +530,71 @@ frame moves the skin tone, and the skin tone must stay as photographed.
 
 ---
 
-## 18. API reference
+## 18. Image uploads
+
+Project images are uploaded from the browser rather than pasted as URLs. In the admin dashboard,
+under **Project image**, press **Choose Image** and pick a file — the same button works on a phone,
+and on desktop you can also drag a file onto the drop zone. A preview appears immediately, and the
+image uploads in the background while you finish typing the rest of the project.
+
+### Setting it up
+
+Uploads use **Cloudinary**, which stores the files and serves them over a CDN.
+
+1. Create a free account at [cloudinary.com](https://cloudinary.com) (the free tier is generous).
+2. Open **Dashboard → Settings → API Keys**. You need three values:
+   - **Cloud name**
+   - **API Key**
+   - **API Secret**
+3. Put them in `server/.env`:
+   ```bash
+   CLOUDINARY_CLOUD_NAME=your-cloud-name
+   CLOUDINARY_API_KEY=000000000000000
+   CLOUDINARY_API_SECRET=your-api-secret
+   ```
+4. Restart the API.
+
+Leave them blank and everything still works — the form simply offers a URL field instead, and the
+upload endpoint returns `503`.
+
+### How the upload is kept safe
+
+The browser never holds a storage credential, and there is no unsigned upload preset (which would
+amount to a public write key into your account). Instead:
+
+1. The browser sends the file to `POST /api/admin/uploads` with its admin session token.
+2. The API checks that token, then signs the upload with the API secret and forwards it.
+3. Cloudinary returns a URL, which is saved on the project row in PostgreSQL.
+
+The API secret is used only on the server. The signature is valid for one hour and is locked to the
+`CLOUDINARY_FOLDER` folder, so a leaked signature cannot be reused elsewhere.
+
+### Images are shrunk before they are uploaded
+
+A photo off a phone is 4–8 MB and 4000px wide, but a project card never renders wider than about
+600px. `client/src/utils/optimizeImage.js` therefore resizes to a 1600px longest edge and re-encodes
+to WebP **in the browser**, before anything is sent. A 6 MB photo typically leaves as 200–400 KB, so
+the upload is quick on mobile data and the portfolio stays fast for every visitor afterwards.
+
+The original file on your device is never modified — only the bytes that travel are affected.
+Animated GIFs pass through untouched (a canvas would flatten them), and images that are small and
+already optimised are sent as-is, because re-encoding them would make them bigger. Two limits apply
+on top: `MAX_UPLOAD_MB` on the server, and a 1600px cap in the browser.
+
+### Deleting images
+
+Deleting a project also deletes its uploaded image, and replacing an image deletes the one it
+replaced. Two safety rules keep this from doing damage:
+
+- **Images you did not upload are never touched.** A pasted URL has no stored asset id, so the
+  server has nothing to delete and will not go looking.
+- **A shared image survives until the last project releases it.** If two projects use the same
+  upload, deleting one leaves the file alone.
+
+Storage cleanup is best-effort: if Cloudinary is unreachable, the database change still succeeds
+and the orphaned file is logged. A tidy-up problem must never turn into a failed edit.
+
+## 19. API reference
 
 Base URL: `http://localhost:4000/api`
 
@@ -523,6 +608,7 @@ Base URL: `http://localhost:4000/api`
 | `DELETE` | `/projects/:id` | admin | Delete a project. |
 | `GET` | `/admin/status` | — | Whether admin auth is configured. |
 | `POST` | `/admin/session` | — | Exchange the admin key for a session token. |
+| `POST` | `/admin/uploads` | admin | Multipart image upload. Field name `file`. |
 | `GET` | `/admin/messages` | admin | Contact form submissions. |
 | `POST` | `/contact` | — | Submit the contact form. |
 
@@ -530,8 +616,9 @@ Base URL: `http://localhost:4000/api`
 `{ "error": { "message": "...", "status": 422, "details": [...] } }`.
 
 **Status codes** — `200` read, `201` created, `204` deleted, `400` malformed id or body,
-`401` missing/expired token, `404` not found, `422` validation failure, `429` rate limited,
-`503` database or admin auth unavailable.
+`401` missing/expired token, `404` not found, `413` body too large, `415` unsupported file type,
+`422` validation failure, `429` rate limited, `502` storage rejected the upload,
+`503` database, admin auth, or storage unavailable.
 
 **Security notes**
 
@@ -552,7 +639,7 @@ cd server
 It checks health, auth enforcement, validation, the full CRUD cycle, and verifies each change
 actually landed in PostgreSQL.
 
-## 19. Troubleshooting
+## 20. Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |

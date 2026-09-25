@@ -15,15 +15,13 @@
     "db:seed": "npm --prefix server run db:seed",
     "db:reset": "npm --prefix server run db:reset",
     "admin:key": "npm --prefix server run admin:key",
-    "test:api": "bash server/scripts/api-smoke-test.sh"
+    "test:api": "bash server/scripts/api-smoke-test.sh",
+    "bootstrap": "bash scripts/bootstrap.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
   },
   "engines": {
     "node": ">=18.18.0"
-  },
-  "dependencies": {
-    "vite": "^8.3.1"
   }
 }

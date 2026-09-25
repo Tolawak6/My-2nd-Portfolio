@@ -32,8 +32,16 @@ CREATE TABLE IF NOT EXISTS projects (
   CONSTRAINT projects_name_length           CHECK (length(name) <= 150)
 );
 
+-- Stores the storage provider's identifier for an uploaded image, so that
+-- replacing or deleting a project can clean up the asset it left behind.
+-- Empty for projects whose image is a pasted URL, which we never delete.
+-- Added separately from CREATE TABLE so existing databases pick it up too.
+ALTER TABLE projects
+  ADD COLUMN IF NOT EXISTS image_public_id TEXT NOT NULL DEFAULT '';
+
 COMMENT ON TABLE  projects             IS 'Portfolio projects rendered by the frontend Projects section.';
 COMMENT ON COLUMN projects.image       IS 'Image URL (absolute https:// or site-relative /path). May be empty.';
+COMMENT ON COLUMN projects.image_public_id IS 'Storage asset id for images uploaded through the admin dashboard. Empty for externally hosted images.';
 COMMENT ON COLUMN projects.link        IS 'Live project or repository URL. May be empty.';
 COMMENT ON COLUMN projects.description IS 'Short description shown on the project card.';
 
